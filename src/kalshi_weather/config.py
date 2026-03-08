@@ -1,0 +1,166 @@
+"""Application configuration via pydantic-settings."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+    )
+
+    # Anthropic API key for Claude Haiku calls (optional — not needed for Kalshi parsing)
+    anthropic_api_key: str = ""
+
+    # Kelly criterion fraction (0.50 = half-Kelly)
+    kelly_fraction: float = 0.50
+
+    # Minimum edge to generate a signal
+    min_edge: float = 0.15
+
+    # Minimum model confidence to generate a signal
+    min_confidence: float = 0.30
+
+    # Suppress YES direction signals (only generate NO signals)
+    no_only: bool = True
+
+    # Minimum market YES probability to generate a signal
+    # Higher = cheaper NO shares = better payout ratio
+    min_market_prob: float = 0.25
+
+    # Only signal a market once (first signal only)
+    first_signal_only: bool = True
+
+    # Maximum model probability for NO signals (skip near coin-flip bets)
+    max_model_prob: float = 0.20
+
+    # Minimum computed Kelly bet size to emit a signal (skip low-conviction signals)
+    min_kelly_bet: float = 0.10
+
+    # Minimum lead time (hours) — skip markets too close to expiry
+    min_lead_time_hours: float = 12.0
+
+    # PostgreSQL connection URL (set DATABASE_URL on Railway)
+    database_url: str = ""
+
+    # SQLite database path for signal tracking (fallback when database_url is empty)
+    db_path: Path = Path.home() / ".kalshi-weather" / "signals.db"
+
+    # NOAA/NWS user agent string
+    nws_user_agent: str = "kalshi-weather (kalshi-weather@example.com)"
+
+    # Kalshi API base URL
+    kalshi_api_url: str = "https://api.elections.kalshi.com/trade-api/v2"
+
+    # Kalshi weather series to scan.
+    # Each entry is a series_ticker prefix (e.g., "KXHIGHNY", "KXLOWCHI").
+    # You can use broad prefixes like "KXHIGH" to match all cities,
+    # or specific ones like "KXHIGHNY" for just New York.
+    kalshi_weather_series: list[str] = [
+        "KXHIGHNY",
+        "KXHIGHCHI",
+        "KXHIGHMIA",
+        "KXHIGHLAX",
+        "KXHIGHDEN",
+        "KXHIGHATL",
+        "KXHIGHDAL",
+        "KXHIGHSEA",
+        "KXHIGHHOU",
+        "KXHIGHPHX",
+    ]
+
+    # Open-Meteo base URLs
+    openmeteo_api_url: str = "https://ensemble-api.open-meteo.com/v1"
+    openmeteo_forecast_api_url: str = "https://api.open-meteo.com/v1"
+
+    # NOAA/NWS base URL
+    nws_api_url: str = "https://api.weather.gov"
+
+    # ECMWF weight for blending (GFS gets 1 - this)
+    ecmwf_weight: float = 0.6
+
+    # Probability floor/ceiling — clamp extreme model probabilities
+    probability_floor: float = 0.12
+
+    # Dynamic weighting: degrees C gap between model means before downweighting outlier
+    model_disagreement_threshold: float = 2.5
+    # Dynamic weighting: floor — outlier keeps at least this fraction of its base weight
+    model_min_weight_ratio: float = 0.15
+
+    # HTTP request timeout seconds
+    http_timeout: float = 30.0
+
+    # Max concurrent API requests
+    max_concurrency: int = 10
+
+    # Market types to monitor (others are skipped during forecasting).
+    # Valid values: "temperature", "precipitation", "hurricane"
+    enabled_market_types: list[str] = ["temperature"]
+
+    # Station bias correction
+    station_bias_enabled: bool = True
+    station_bias_path: Path = Path.home() / ".kalshi-weather" / "station_biases.json"
+
+    # Telegram notifications
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_enabled: bool = False
+    telegram_high_edge: float = 0.10
+
+    @field_validator("probability_floor")
+    @classmethod
+    def _probability_floor_in_range(cls, v: float) -> float:
+        if not 0.0 <= v < 0.5:
+            raise ValueError(f"probability_floor must be in [0, 0.5), got {v}")
+        return v
+
+    @field_validator("ecmwf_weight")
+    @classmethod
+    def _ecmwf_weight_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"ecmwf_weight must be in [0, 1], got {v}")
+        return v
+
+    @field_validator("kelly_fraction")
+    @classmethod
+    def _kelly_fraction_in_range(cls, v: float) -> float:
+        if not 0.0 < v <= 1.0:
+            raise ValueError(f"kelly_fraction must be in (0, 1], got {v}")
+        return v
+
+    @field_validator("min_edge")
+    @classmethod
+    def _min_edge_positive(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError(f"min_edge must be >= 0, got {v}")
+        return v
+
+    @field_validator("max_model_prob")
+    @classmethod
+    def _max_model_prob_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"max_model_prob must be in [0, 1], got {v}")
+        return v
+
+    @field_validator("min_kelly_bet")
+    @classmethod
+    def _min_kelly_bet_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError(f"min_kelly_bet must be in [0, 1], got {v}")
+        return v
+
+
+_settings_cache: Settings | None = None
+
+
+def get_settings() -> Settings:
+    """Get cached settings instance."""
+    global _settings_cache
+    if _settings_cache is None:
+        _settings_cache = Settings()
+    return _settings_cache

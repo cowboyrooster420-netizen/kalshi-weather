@@ -1,0 +1,315 @@
+"""Top-level pipeline orchestrator.
+
+Wires together: Kalshi market scanning -> weather fetching -> forecasting -> signal generation.
+Uses asyncio.gather for concurrent API calls, grouped by location.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections import defaultdict
+
+import httpx
+from rich.console import Console
+
+from kalshi_weather.common.types import LatLon
+from kalshi_weather.forecasting.base import ProbabilityEstimate
+from kalshi_weather.forecasting.registry import get_model
+from kalshi_weather.markets.client import fetch_weather_markets, raw_to_weather_market
+from kalshi_weather.markets.models import WeatherMarket
+from kalshi_weather.markets.parser import parse_kalshi_market
+from kalshi_weather.config import get_settings
+from kalshi_weather.notifications.telegram import TelegramNotifier
+from kalshi_weather.signals.analyzer import generate_signal
+from kalshi_weather.signals.models import Signal
+from kalshi_weather.signals.tracker import SignalTracker
+from kalshi_weather.weather.models import EnsembleForecast, HRRRForecast, NOAAForecast
+from kalshi_weather.weather.noaa import fetch_noaa_forecast
+from kalshi_weather.weather.openmeteo import fetch_both_ensembles, fetch_hrrr
+
+logger = logging.getLogger(__name__)
+console = Console()
+
+
+async def scan_markets() -> list[WeatherMarket]:
+    """Scan Kalshi for weather prediction markets.
+
+    1. Fetch all active weather markets from Kalshi API
+    2. Parse each ticker into structured params
+    """
+    console.print("[bold]Scanning Kalshi for weather markets...[/bold]")
+    raw_markets = await fetch_weather_markets()
+    console.print(f"  Found {len(raw_markets)} weather markets")
+
+    weather_markets: list[WeatherMarket] = []
+    parse_fail_count = 0
+
+    for raw in raw_markets:
+        market = raw_to_weather_market(raw)
+
+        # Parse market parameters from ticker
+        params = await parse_kalshi_market(raw)
+        if params is not None:
+            market.params = params
+        else:
+            parse_fail_count += 1
+            logger.info(
+                "Failed to parse params for market %s: %s",
+                market.market_id,
+                market.question[:80],
+            )
+
+        weather_markets.append(market)
+
+    if parse_fail_count:
+        logger.debug("Parse failures: %d", parse_fail_count)
+    console.print(
+        f"  Parsed [green]{len(weather_markets) - parse_fail_count}[/green] market(s) successfully"
+    )
+    return weather_markets
+
+
+async def _fetch_weather_for_location(
+    lat: float, lon: float,
+) -> tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None, HRRRForecast | None]:
+    """Fetch all weather data for a single location."""
+    gfs: EnsembleForecast | None = None
+    ecmwf: EnsembleForecast | None = None
+    noaa: NOAAForecast | None = None
+    hrrr: HRRRForecast | None = None
+
+    try:
+        gfs, ecmwf = await fetch_both_ensembles(lat, lon)
+    except httpx.HTTPStatusError as exc:
+        logger.warning("Open-Meteo HTTP %d for (%.2f, %.2f)", exc.response.status_code, lat, lon)
+        console.print(f"  [yellow]Open-Meteo HTTP {exc.response.status_code} for ({lat:.2f}, {lon:.2f})[/yellow]")
+    except httpx.TimeoutException:
+        logger.warning("Open-Meteo timeout for (%.2f, %.2f)", lat, lon)
+        console.print(f"  [yellow]Open-Meteo timeout for ({lat:.2f}, {lon:.2f})[/yellow]")
+    except (ValueError, KeyError) as exc:
+        logger.warning("Open-Meteo parse error for (%.2f, %.2f): %s", lat, lon, exc)
+        console.print(f"  [yellow]Open-Meteo parse error for ({lat:.2f}, {lon:.2f}): {exc}[/yellow]")
+
+    try:
+        noaa = await fetch_noaa_forecast(lat, lon)
+    except httpx.HTTPStatusError:
+        logger.debug("NWS unavailable for (%.2f, %.2f) — likely non-US", lat, lon)
+    except httpx.TimeoutException:
+        logger.info("NWS timeout for (%.2f, %.2f)", lat, lon)
+
+    try:
+        hrrr = await fetch_hrrr(lat, lon)
+    except (httpx.HTTPStatusError, httpx.TimeoutException, ValueError, KeyError) as exc:
+        logger.info("HRRR unavailable for (%.2f, %.2f): %s", lat, lon, exc)
+
+    return gfs, ecmwf, noaa, hrrr
+
+
+async def fetch_weather_data(
+    markets: list[WeatherMarket],
+) -> dict[LatLon, tuple[EnsembleForecast | None, EnsembleForecast | None, NOAAForecast | None, HRRRForecast | None]]:
+    """Fetch weather data grouped by location (deduped).
+
+    Markets at the same location share one set of API calls.
+    """
+    # Group markets by location (rounded to 2 decimal places)
+    locations: dict[LatLon, list[WeatherMarket]] = defaultdict(list)
+    skipped_no_location = 0
+    for market in markets:
+        if market.params and market.params.lat_lon:
+            key = (
+                round(market.params.lat_lon[0], 2),
+                round(market.params.lat_lon[1], 2),
+            )
+            locations[key].append(market)
+        else:
+            skipped_no_location += 1
+
+    if skipped_no_location:
+        logger.info(
+            "Skipped %d market(s) without geocoded location for weather fetch",
+            skipped_no_location,
+        )
+
+    console.print(
+        f"[bold]Fetching weather data for {len(locations)} unique location(s)...[/bold]"
+    )
+
+    results: dict[LatLon, tuple] = {}
+
+    # Rate-limit concurrent fetches to avoid Open-Meteo 429s.
+    sem = asyncio.Semaphore(3)
+
+    async def _throttled_fetch(lat: float, lon: float) -> tuple:
+        async with sem:
+            result = await _fetch_weather_for_location(lat, lon)
+            await asyncio.sleep(1.0)
+            return result
+
+    latlon_list = list(locations.keys())
+    coros = [_throttled_fetch(ll[0], ll[1]) for ll in latlon_list]
+    fetched = await asyncio.gather(*coros, return_exceptions=True)
+
+    for latlon, result in zip(latlon_list, fetched):
+        if isinstance(result, BaseException):
+            console.print(f"  [red]Error fetching ({latlon[0]:.2f}, {latlon[1]:.2f}): {result}[/red]")
+            results[latlon] = (None, None, None, None)
+        else:
+            results[latlon] = result
+
+    return results
+
+
+async def run_forecasts(
+    markets: list[WeatherMarket],
+    weather_data: dict[LatLon, tuple],
+) -> list[tuple[WeatherMarket, ProbabilityEstimate]]:
+    """Run forecast models for each market.
+
+    Dispatches to the correct model by MarketType.
+    """
+    console.print("[bold]Running forecast models...[/bold]")
+    results: list[tuple[WeatherMarket, ProbabilityEstimate]] = []
+
+    settings = get_settings()
+    enabled_types = set(settings.enabled_market_types)
+
+    skipped_no_params = 0
+    skipped_no_model = 0
+    skipped_disabled_type = 0
+
+    for market in markets:
+        if not market.params:
+            skipped_no_params += 1
+            continue
+
+        if market.params.market_type.value not in enabled_types:
+            skipped_disabled_type += 1
+            logger.info(
+                "Skipping disabled market type %s (market %s)",
+                market.params.market_type.value, market.market_id,
+            )
+            continue
+
+        model = get_model(market.params.market_type)
+        if model is None:
+            skipped_no_model += 1
+            logger.info("No model for market type %s (market %s)", market.params.market_type.value, market.market_id)
+            continue
+
+        # Get weather data for this market's location
+        gfs, ecmwf, noaa, hrrr = None, None, None, None
+        if market.params.lat_lon:
+            key = (
+                round(market.params.lat_lon[0], 2),
+                round(market.params.lat_lon[1], 2),
+            )
+            weather = weather_data.get(key)
+            if weather:
+                gfs, ecmwf, noaa, hrrr = weather
+
+        try:
+            estimate = await model.estimate(market.params, gfs, ecmwf, noaa, hrrr=hrrr)
+            results.append((market, estimate))
+            console.print(
+                f"  {market.params.market_type.value}: "
+                f"model={estimate.probability:.1%} "
+                f"market={market.market_prob:.1%} "
+                f"edge={estimate.probability - market.market_prob:+.1%}"
+            )
+        except (ValueError, TypeError, IndexError) as exc:
+            logger.warning("Model error for market %s: %s", market.market_id, exc)
+            console.print(f"  [red]Model error for {market.market_id}: {exc}[/red]")
+
+    if skipped_no_params or skipped_no_model or skipped_disabled_type:
+        logger.info(
+            "Forecast skips: %d no params, %d no model, %d disabled type",
+            skipped_no_params, skipped_no_model, skipped_disabled_type,
+        )
+
+    return results
+
+
+async def generate_signals(
+    forecast_results: list[tuple[WeatherMarket, ProbabilityEstimate]],
+) -> list[Signal]:
+    """Generate trading signals from forecast results.
+
+    Filters by minimum edge threshold and computes Kelly sizing.
+    """
+    settings = get_settings()
+    prior_market_ids: set[str] = set()
+    if settings.first_signal_only:
+        try:
+            tracker = SignalTracker()
+            summary = await tracker.get_prior_signals_summary(
+                [m.market_id for m, _ in forecast_results],
+            )
+            prior_market_ids = set(summary.keys())
+            await tracker.close()
+        except Exception:
+            logger.warning("Failed to fetch prior signals, skipping first-signal filter", exc_info=True)
+
+    signals: list[Signal] = []
+
+    for market, estimate in forecast_results:
+        signal = generate_signal(market, estimate, prior_market_ids=prior_market_ids)
+        if signal is not None:
+            signals.append(signal)
+
+    console.print(
+        f"[bold]Generated [green]{len(signals)}[/green] signal(s) "
+        f"(from {len(forecast_results)} forecast(s))[/bold]"
+    )
+    return signals
+
+
+async def run_pipeline() -> list[Signal]:
+    """Run the full pipeline: resolve -> scan -> fetch -> forecast -> signal -> log.
+
+    Returns list of generated signals.
+    """
+    # Step 0: Auto-resolve pending market outcomes
+    from kalshi_weather.signals.resolver import resolve_pending_signals
+
+    try:
+        resolved = await resolve_pending_signals()
+        if resolved:
+            console.print(
+                f"[dim]Auto-resolved {len(resolved)} market(s)[/dim]"
+            )
+    except Exception:
+        logger.warning("Auto-resolve failed, continuing with scan", exc_info=True)
+
+    # Step 1: Scan markets
+    markets = await scan_markets()
+    if not markets:
+        console.print("[yellow]No weather markets found.[/yellow]")
+        return []
+
+    # Step 2: Fetch weather data (grouped by location, concurrent)
+    weather_data = await fetch_weather_data(markets)
+
+    # Step 3: Run forecast models
+    forecast_results = await run_forecasts(markets, weather_data)
+    if not forecast_results:
+        console.print("[yellow]No forecasts produced.[/yellow]")
+        return []
+
+    # Step 4: Generate signals
+    signals = await generate_signals(forecast_results)
+
+    # Step 5: Log signals to database
+    if signals:
+        tracker = SignalTracker()
+        ids = await tracker.log_signals(signals)
+        console.print(f"[dim]Logged {len(ids)} signal(s) to database[/dim]")
+
+    # Step 6: Send Telegram notifications
+    settings = get_settings()
+    if settings.telegram_enabled:
+        notifier = TelegramNotifier()
+        await notifier.notify(signals)
+
+    return signals
