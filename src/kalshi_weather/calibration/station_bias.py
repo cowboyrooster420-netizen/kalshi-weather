@@ -1,17 +1,18 @@
-"""Per-station bias correction for WU airport weather stations.
+"""Per-station bias correction for NWS airport weather stations.
 
 Computes, stores, and applies bias offsets that capture the systematic
-difference between what a WU airport station reports and what ERA5
-reanalysis (which our ensemble models are calibrated against) shows
-for the same location and time.
+difference between what the NWS Daily Climate Report (CLI) reports and
+what ERA5 reanalysis (which our ensemble models are calibrated against)
+shows for the same location and time.
 
-    bias = WU_reading - ERA5_reanalysis
+    bias = NWS_observed - ERA5_reanalysis
 
 A positive bias means the station reads warm relative to reanalysis.
 We shift our ensemble members by this amount so our probability estimates
-reflect what the specific station will actually report.
+reflect what the NWS CLI will actually report — which is what Kalshi
+uses for market settlement.
 
-Station IDs are ICAO airport codes (e.g. "KATL", "CYYZ").
+Station IDs are ICAO airport codes (e.g. "KATL", "KLGA").
 """
 
 from __future__ import annotations
@@ -40,8 +41,8 @@ class StationBias:
 
     station_id: str
     city: str
-    high_bias_c: float  # mean(WU_high - OM_max); positive = station reads warm
-    low_bias_c: float   # mean(WU_low - OM_min)
+    high_bias_c: float  # mean(NWS_high - OM_max); positive = station reads warm
+    low_bias_c: float   # mean(NWS_low - OM_min)
     mean_bias_c: float  # (high_bias_c + low_bias_c) / 2
     high_std_c: float = 0.0
     low_std_c: float = 0.0

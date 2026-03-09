@@ -142,11 +142,8 @@ def test_load_fallback(tmp_path):
 
         biases = load_biases(force=True)
 
-        # Should have loaded bundled defaults (14 stations)
-        assert len(biases) == 14
-        for b in biases.values():
-            assert isinstance(b.high_bias_c, float)
-            assert isinstance(b.low_bias_c, float)
+        # Bundled defaults are empty until calibration is run
+        assert len(biases) == 0
 
 
 def test_get_station_bias_unknown():

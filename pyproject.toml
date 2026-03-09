@@ -21,7 +21,6 @@ dependencies = [
     "tenacity>=8.2",
     "aiosqlite>=0.20",
     "asyncpg>=0.29",
-    "playwright>=1.40",
 ]
 
 [project.scripts]

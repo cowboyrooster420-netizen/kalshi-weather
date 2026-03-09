@@ -1,7 +1,10 @@
-"""Weather Underground airport station registry.
+"""NWS airport station registry.
 
 Maps airport ICAO codes used by Kalshi weather markets to their
-metadata (location, coordinates, timezone, WU history page path).
+metadata (location, coordinates, timezone, GHCN station ID).
+
+Kalshi settles on the NWS Daily Climate Report (CLI), so we use
+NCEI GHCN station IDs for fetching observed temperatures.
 
 Kalshi weather markets are US-only, so all stations are domestic airports.
 """
@@ -15,13 +18,13 @@ from kalshi_weather.common.types import LatLon
 
 @dataclass(frozen=True)
 class Station:
-    """A Weather Underground airport weather station."""
+    """An NWS airport weather station."""
 
     icao: str           # Airport ICAO code, e.g. "KATL"
     city: str           # e.g. "atlanta"
     lat_lon: LatLon     # (lat, lon)
     timezone: str       # IANA timezone, e.g. "America/New_York"
-    history_path: str   # WU history page path, e.g. "us/ga/atlanta/KATL"
+    ghcn_id: str        # GHCN station ID for NCEI API, e.g. "USW00013874"
 
 
 # All airport stations for Kalshi weather market cities.
@@ -31,98 +34,98 @@ STATIONS: dict[str, Station] = {
     "KLGA": Station(
         icao="KLGA", city="new york",
         lat_lon=(40.760, -73.860), timezone="America/New_York",
-        history_path="us/ny/new-york-city/KLGA",
+        ghcn_id="USW00014732",
     ),
     "KORD": Station(
         icao="KORD", city="chicago",
         lat_lon=(41.980, -87.910), timezone="America/Chicago",
-        history_path="us/il/chicago/KORD",
+        ghcn_id="USW00094846",
     ),
     "KMIA": Station(
         icao="KMIA", city="miami",
         lat_lon=(25.850, -80.240), timezone="America/New_York",
-        history_path="us/fl/miami/KMIA",
+        ghcn_id="USW00012839",
     ),
     "KLAX": Station(
         icao="KLAX", city="los angeles",
         lat_lon=(33.940, -118.410), timezone="America/Los_Angeles",
-        history_path="us/ca/los-angeles/KLAX",
+        ghcn_id="USW00023174",
     ),
     "KDEN": Station(
         icao="KDEN", city="denver",
         lat_lon=(39.850, -104.670), timezone="America/Denver",
-        history_path="us/co/denver/KDEN",
+        ghcn_id="USW00003017",
     ),
     "KATL": Station(
         icao="KATL", city="atlanta",
         lat_lon=(33.640, -84.410), timezone="America/New_York",
-        history_path="us/ga/atlanta/KATL",
+        ghcn_id="USW00013874",
     ),
     "KDFW": Station(
         icao="KDFW", city="dallas",
         lat_lon=(32.850, -96.870), timezone="America/Chicago",
-        history_path="us/tx/dallas/KDFW",
+        ghcn_id="USW00003927",
     ),
     "KSEA": Station(
         icao="KSEA", city="seattle",
         lat_lon=(47.440, -122.300), timezone="America/Los_Angeles",
-        history_path="us/wa/seattle/KSEA",
+        ghcn_id="USW00024233",
     ),
     "KIAH": Station(
         icao="KIAH", city="houston",
         lat_lon=(29.980, -95.340), timezone="America/Chicago",
-        history_path="us/tx/houston/KIAH",
+        ghcn_id="USW00012960",
     ),
     "KPHX": Station(
         icao="KPHX", city="phoenix",
         lat_lon=(33.440, -112.010), timezone="America/Phoenix",
-        history_path="us/az/phoenix/KPHX",
+        ghcn_id="USW00023183",
     ),
     # --- Additional Kalshi cities ---
     "KSFO": Station(
         icao="KSFO", city="san francisco",
         lat_lon=(37.620, -122.370), timezone="America/Los_Angeles",
-        history_path="us/ca/san-francisco/KSFO",
+        ghcn_id="USW00023234",
     ),
     "KBOS": Station(
         icao="KBOS", city="boston",
         lat_lon=(42.360, -71.010), timezone="America/New_York",
-        history_path="us/ma/boston/KBOS",
+        ghcn_id="USW00014739",
     ),
     "KDCA": Station(
         icao="KDCA", city="washington",
         lat_lon=(38.850, -77.040), timezone="America/New_York",
-        history_path="us/va/arlington/KDCA",
+        ghcn_id="USW00013743",
     ),
     "KMSP": Station(
         icao="KMSP", city="minneapolis",
         lat_lon=(44.880, -93.220), timezone="America/Chicago",
-        history_path="us/mn/minneapolis/KMSP",
+        ghcn_id="USW00014922",
     ),
     "KDTW": Station(
         icao="KDTW", city="detroit",
         lat_lon=(42.210, -83.350), timezone="America/Detroit",
-        history_path="us/mi/detroit/KDTW",
+        ghcn_id="USW00094847",
     ),
     "KPHL": Station(
         icao="KPHL", city="philadelphia",
         lat_lon=(39.870, -75.240), timezone="America/New_York",
-        history_path="us/pa/philadelphia/KPHL",
+        ghcn_id="USW00013739",
     ),
     "KAUS": Station(
         icao="KAUS", city="austin",
         lat_lon=(30.190, -97.670), timezone="America/Chicago",
-        history_path="us/tx/austin/KAUS",
+        ghcn_id="USW00013904",
     ),
     "KLAS": Station(
         icao="KLAS", city="las vegas",
         lat_lon=(36.080, -115.150), timezone="America/Los_Angeles",
-        history_path="us/nv/las-vegas/KLAS",
+        ghcn_id="USW00023169",
     ),
     "KSTL": Station(
         icao="KSTL", city="st. louis",
         lat_lon=(38.750, -90.370), timezone="America/Chicago",
-        history_path="us/mo/st-louis/KSTL",
+        ghcn_id="USW00013994",
     ),
 }
 

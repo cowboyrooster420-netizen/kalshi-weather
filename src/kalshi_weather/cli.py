@@ -551,23 +551,27 @@ def scorecard(
 def calibrate(
     station: Optional[str] = typer.Option(
         None, "--station", "-s",
-        help="Calibrate a single station (ICAO code, e.g. CYYZ)",
+        help="Calibrate a single station (ICAO code, e.g. KATL)",
     ),
     days: int = typer.Option(
         90, "--days", "-d",
         help="Training window in days",
     ),
 ) -> None:
-    """Compute per-station bias correction from WU airport history vs ERA5.
+    """Compute per-station bias correction from NWS observed temps vs ERA5.
 
-    For each station, scrapes WU airport history daily high/low using
-    Playwright, fetches matching ERA5 reanalysis, and computes the
-    systematic bias. Results are saved to ~/.kalshi-weather/station_biases.json.
+    For each station, fetches NWS daily high/low from the NCEI Data Service,
+    fetches matching ERA5 reanalysis, and computes the systematic bias.
+    Results are saved to ~/.kalshi-weather/station_biases.json.
+
+    Kalshi settles on the NWS Daily Climate Report (CLI), so this trains
+    against the same data source used for market resolution.
 
     Can be cron'd (e.g. weekly) to keep biases fresh.
     """
 
     async def _run() -> None:
+        from kalshi_weather.calibration.nws_history import fetch_nws_history
         from kalshi_weather.calibration.openmeteo_history import (
             fetch_openmeteo_history_v2,
             training_window,
@@ -578,7 +582,6 @@ def calibrate(
             save_biases,
         )
         from kalshi_weather.weather.stations import STATIONS
-        from kalshi_weather.weather.wunderground import fetch_airport_history
 
         start, end = training_window(days)
         console.print(
@@ -601,13 +604,13 @@ def calibrate(
         for icao, stn in targets.items():
             console.print(f"\n  [bold]{icao}[/bold] ({stn.city})")
 
-            # Fetch WU airport history via Playwright
-            console.print(f"    Scraping WU airport history...", end="")
-            wu_obs = await fetch_airport_history(stn, start, end)
-            console.print(f" {len(wu_obs)} days")
+            # Fetch NWS observed temps from NCEI
+            console.print(f"    Fetching NWS observed temps...", end="")
+            nws_obs = await fetch_nws_history(stn, start, end)
+            console.print(f" {len(nws_obs)} days")
 
-            if not wu_obs:
-                console.print("    [yellow]No WU data, skipping[/yellow]")
+            if not nws_obs:
+                console.print("    [yellow]No NWS data, skipping[/yellow]")
                 results[icao] = StationBiasV2(
                     station_id=icao, city=stn.city,
                     high_bias_c=0.0, low_bias_c=0.0, mean_bias_c=0.0,
@@ -634,22 +637,22 @@ def calibrate(
 
             # Match days present in both datasets
             om_by_date = {o.obs_date: o for o in om_obs}
-            wu_highs: list[float] = []
-            wu_lows: list[float] = []
+            nws_highs: list[float] = []
+            nws_lows: list[float] = []
             om_maxs: list[float] = []
             om_mins: list[float] = []
             cloud_covers: list[float | None] = []
 
-            for wu in wu_obs:
-                om = om_by_date.get(wu.date)
+            for obs in nws_obs:
+                om = om_by_date.get(obs.date)
                 if om is not None:
-                    wu_highs.append(wu.high_temp_c)
-                    wu_lows.append(wu.low_temp_c)
+                    nws_highs.append(obs.high_temp_c)
+                    nws_lows.append(obs.low_temp_c)
                     om_maxs.append(om.max_temp_c)
                     om_mins.append(om.min_temp_c)
                     cloud_covers.append(om.cloud_cover_mean)
 
-            if not wu_highs:
+            if not nws_highs:
                 console.print("    [yellow]No matching days, skipping[/yellow]")
                 results[icao] = StationBiasV2(
                     station_id=icao, city=stn.city,
@@ -659,7 +662,7 @@ def calibrate(
                 continue
 
             bias = compute_station_bias_stratified(
-                wu_highs, wu_lows, om_maxs, om_mins, cloud_covers,
+                nws_highs, nws_lows, om_maxs, om_mins, cloud_covers,
                 station_id=icao, city=stn.city,
             )
             results[icao] = bias

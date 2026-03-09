@@ -1,5 +1,5 @@
 [phases.install]
-cmds = ["pip install --no-cache-dir .", "playwright install --with-deps chromium"]
+cmds = ["pip install --no-cache-dir ."]
 
 [start]
 cmd = "python -m kalshi_weather.cli scan --notify"
