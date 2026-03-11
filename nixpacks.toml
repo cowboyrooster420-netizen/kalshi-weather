@@ -1,2 +1,0 @@
-[start]
-cmd = "PYTHONPATH=/app/src python -m kalshi_weather.cli scan --notify"
